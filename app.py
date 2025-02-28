@@ -2,14 +2,14 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 import google.generativeai as genai
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 
 # Load API Key from .env file
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 
 if not api_key:
-    st.error("Missing API Key! Make sure GOOGLE_API_KEY is set in .env")
+    st.error("❌ Missing API Key! Make sure GOOGLE_API_KEY is set in .env")
 else:
     genai.configure(api_key=api_key)
 
@@ -18,16 +18,36 @@ prompt = """You are a YouTube video summarizer. You will take the transcript tex
 and summarize the entire video, providing the key points within 250 words.
 Please provide the summary of the text given here: """
 
-# Function to extract transcript
+# Function to extract transcript (supports multiple languages)
 def extract_transcript_details(youtube_video_url):
     try:
-        video_id = youtube_video_url.split("v=")[-1].split("&")[0]
-        transcript_text = YouTubeTranscriptApi.get_transcript(video_id)
+        # Extract video ID (supports both `watch?v=` and `youtu.be/`)
+        if "youtu.be/" in youtube_video_url:
+            video_id = youtube_video_url.split("youtu.be/")[-1].split("?")[0]
+        elif "watch?v=" in youtube_video_url:
+            video_id = youtube_video_url.split("watch?v=")[-1].split("&")[0]
+        else:
+            return None, "Invalid YouTube URL format."
 
-        transcript = " ".join([i["text"] for i in transcript_text])
-        return transcript
+        # Try fetching English transcript
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = transcript_list.find_transcript(['en']).fetch()
+        except NoTranscriptFound:
+            # Try fetching any available transcript
+            transcript = transcript_list.find_generated_transcript(['en']).fetch()
+        
+        # Combine transcript text
+        transcript_text = " ".join([i["text"] for i in transcript])
+        return transcript_text, None
+    except TranscriptsDisabled:
+        return None, "Transcripts are disabled for this video."
+    except NoTranscriptFound:
+        return None, "No subtitles available for this video in English."
+    except VideoUnavailable:
+        return None, "This video is unavailable or private."
     except Exception as e:
-        return None
+        return None, f"Error fetching transcript: {str(e)}"
 
 # Function to generate summary using Gemini AI
 def generate_gemini_content(transcript_text):
@@ -54,7 +74,7 @@ if youtube_link:
 
 if st.button("Get Summary"):
     with st.spinner("🛠️ Extracting transcript..."):
-        transcript_text = extract_transcript_details(youtube_link)
+        transcript_text, error_message = extract_transcript_details(youtube_link)
 
     if transcript_text:
         with st.spinner("🛠️ Generating AI Summary..."):
@@ -63,4 +83,4 @@ if st.button("Get Summary"):
         st.markdown("## Summary:")
         st.write(summary)
     else:
-        st.error("Failed to extract transcript. The video may not have subtitles.")
+        st.error(f"❌ {error_message}")
